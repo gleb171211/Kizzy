@@ -2,7 +2,11 @@ package com.my.kizzy.feature_rpc_base.services
 
 import android.annotation.SuppressLint
 import android.app.*
+import android.content.Context
 import android.content.Intent
+import android.media.session.MediaController
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.PowerManager.WakeLock
@@ -40,16 +44,31 @@ class CustomRpcService : Service() {
     private val heartbeatScope = CoroutineScope(Dispatchers.Default)
     private var lastTrackKey: String? = null
 
+    private fun getCurrentTrack(): String? {
+        val mediaSessionManager = getSystemService(Context.MEDIA_SESSION_SERVICE) as MediaSessionManager
+        val sessions = mediaSessionManager.getActiveSessions(null)
+        for (controller: MediaController in sessions) {
+            val state = controller.playbackState
+            val metadata = controller.metadata
+            if (state != null && state.state == PlaybackState.STATE_PLAYING && metadata != null) {
+                val title = metadata.getString(android.media.MediaMetadata.METADATA_KEY_TITLE)
+                val artist = metadata.getString(android.media.MediaMetadata.METADATA_KEY_ARTIST)
+                return "$title - $artist"
+            }
+        }
+        return null
+    }
+
     private fun startHeartbeat() {
         if (heartbeatJob?.isActive == true) return
         heartbeatJob = heartbeatScope.launch {
             while (isActive) {
                 try {
-                    val track = rpcData?.name ?: ""
-                    val key = track // можно добавить artist/album/position для уникальности
-
-                    if (key != lastTrackKey) {
-                        lastTrackKey = key
+                    val currentTrack = getCurrentTrack()
+                    if (!currentTrack.isNullOrEmpty() && currentTrack != lastTrackKey) {
+                        lastTrackKey = currentTrack
+                        // Обновляем rpcData и отправляем в Discord
+                        rpcData?.name = currentTrack
                         rpcData?.let { data ->
                             kizzyRPC.apply {
                                 setName(data.name.ifEmpty { "" })
