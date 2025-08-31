@@ -1,15 +1,3 @@
-/*
- *
- *  ******************************************************************
- *  *  * Copyright (C) 2022
- *  *  * CustomRpcService.kt is part of Kizzy
- *  *  *  and can not be copied and/or distributed without the express
- *  *  * permission of yzziK(Vaibhav)
- *  *  *****************************************************************
- *
- *
- */
-
 package com.my.kizzy.feature_rpc_base.services
 
 import android.annotation.SuppressLint
@@ -24,15 +12,14 @@ import com.my.kizzy.feature_rpc_base.Constants
 import com.my.kizzy.feature_rpc_base.setLargeIcon
 import com.my.kizzy.resources.R
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.launch
+import kotlinx.coroutines.*
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 
 @AndroidEntryPoint
 class CustomRpcService : Service() {
+
     private var rpcData: RpcConfig? = null
     private var wakeLock: WakeLock? = null
 
@@ -47,6 +34,44 @@ class CustomRpcService : Service() {
 
     @Inject
     lateinit var notificationManager: NotificationManager
+
+    // ---------- Heartbeat для обновления трека ----------
+    private var heartbeatJob: Job? = null
+    private val heartbeatScope = CoroutineScope(Dispatchers.Default)
+    private var lastTrackKey: String? = null
+
+    private fun startHeartbeat() {
+        if (heartbeatJob?.isActive == true) return
+        heartbeatJob = heartbeatScope.launch {
+            while (isActive) {
+                try {
+                    val track = rpcData?.name ?: ""
+                    val key = track // можно добавить artist/album/position для уникальности
+
+                    if (key != lastTrackKey) {
+                        lastTrackKey = key
+                        rpcData?.let { data ->
+                            kizzyRPC.apply {
+                                setName(data.name.ifEmpty { "" })
+                                setDetails(data.details.ifEmpty { null })
+                                setState(data.state.ifEmpty { null })
+                                setStartTimestamps(data.timestampsStart.toLongOrNull())
+                                setStopTimestamps(data.timestampsStop.toLongOrNull())
+                                build()
+                            }
+                        }
+                    }
+                } catch (_: Throwable) { }
+                delay(10_000L) // каждые 10 секунд
+            }
+        }
+    }
+
+    private fun stopHeartbeat() {
+        heartbeatJob?.cancel()
+        heartbeatJob = null
+    }
+    // ---------------------------------------------------
 
     @SuppressLint("WakelockTimeout")
     @Suppress("DEPRECATION")
@@ -76,6 +101,7 @@ class CustomRpcService : Service() {
             val powerManager = getSystemService(POWER_SERVICE) as PowerManager
             wakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, WAKELOCK)
             wakeLock?.acquire()
+
             scope.launch {
                 notificationManager.notify(
                     Constants.NOTIFICATION_ID,
@@ -108,12 +134,16 @@ class CustomRpcService : Service() {
                         build()
                     }
                 }
+
+                // Запускаем heartbeat после первичной установки RPC
+                startHeartbeat()
             }
         }
         return super.onStartCommand(intent, flags, startId)
     }
 
     override fun onDestroy() {
+        stopHeartbeat()
         scope.cancel()
         kizzyRPC.closeRPC()
         wakeLock?.let {
